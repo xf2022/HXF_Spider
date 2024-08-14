@@ -1,0 +1,39 @@
+---
+# 通用配置
+BASE_WORK_DIR: ''
+PROCESS_COUNT: 5
+LOGGING_FILENAME: 'D:\Program Files\logging\hxf_spider\'
+DOMNLOAD_PATH: 'D:\Image\hxf_spider\'
+
+---
+# test 测试环境
+MYSQL_CONFIG:
+  TYPE: 'mysql'
+  HOST: '127.0.0.1'
+  PORT: 3306
+  USER: 'root'
+  PASSWORD: '123456'
+  DBNAME: 'hxf_spider'
+  CHARSET: 'utf8'
+
+---
+# dev 开发环境
+MYSQL_CONFIG:
+  TYPE: 'mysql'
+  HOST: '127.0.0.1'
+  PORT: 3306
+  USER: 'root'
+  PASSWORD: '123456'
+  DBNAME: 'hxf_spider'
+  CHARSET: 'utf8'
+
+---
+# master 正式环境
+MYSQL_CONFIG:
+  TYPE: 'mysql'
+  HOST: '127.0.0.1'
+  PORT: 3306
+  USER: 'root'
+  PASSWORD: '123456'
+  DBNAME: 'hxf_spider'
+  CHARSET: 'utf8'
