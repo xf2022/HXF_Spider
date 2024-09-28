@@ -20,7 +20,8 @@ class Logger(logging.Logger):
 
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+        console_formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)-8s :: %(message)s',
+                                              datefmt='%y-%m-%d %H:%M:%S')
         console_handler.setFormatter(console_formatter)
         self.addHandler(console_handler)
 

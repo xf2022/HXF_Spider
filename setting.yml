@@ -3,7 +3,7 @@
 BASE_WORK_DIR: ''
 PROCESS_COUNT: 5
 LOGGING_FILENAME: 'D:\Program Files\logging\hxf_spider\'
-DOMNLOAD_PATH: 'D:\Image\hxf_spider\'
+DOWNLOAD_PATH: 'D:\Image\hxf_spider\'
 
 ---
 # test 测试环境

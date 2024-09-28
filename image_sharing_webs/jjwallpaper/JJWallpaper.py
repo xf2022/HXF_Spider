@@ -1,21 +1,28 @@
 # hxf 2024/6/17
+import asyncio
 import hashlib
 import json
 import os.path
+import random
 import time
 from io import BytesIO
+from queue import Queue
+from threading import Thread
 
+import aiohttp
 import arrow
 import requests
 from PIL import Image, UnidentifiedImageError
 
 import setting
 from image_sharing_webs.dao.common_db import MySqlSingleConnect
-from image_sharing_webs.dao.image_db import image_insert_sql
+from image_sharing_webs.dao.image_db import image_insert_sql, verify_image_repeat_sql, image_del_by_id_sql
 from image_sharing_webs.logger.common_logger import logger
 
 insert_sql = image_insert_sql
-DOMNLOAD_PATH = setting.DOMNLOAD_PATH
+verify_sql = verify_image_repeat_sql
+delete_sql = image_del_by_id_sql
+DOWNLOAD_PATH = setting.DOWNLOAD_PATH
 
 
 def get_hash(file):
@@ -38,6 +45,12 @@ def exist_dir(path):
     else:
         return True
 
+def delete_file(file_path):
+    try:
+        os.remove(file_path)
+        return True
+    except FileNotFoundError:
+        return False
 
 class JJWallpaper:
     def __init__(self, business_date=arrow.now().format('YYYY-MM-DD')):
@@ -152,7 +165,7 @@ class JJWallpaper:
     def run(self):
         url = 'https://api.zzzmh.cn/v2/bz/v3/getData'
         download_url = 'https://api.zzzmh.cn/v2/bz/v3/getUrl/{}'
-        download_path = DOMNLOAD_PATH + 'jjwallpaper\\'
+        download_path = DOWNLOAD_PATH + 'jjwallpaper\\'
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Content-Type": "application/json;charset=UTF-8",
@@ -230,7 +243,8 @@ class JJWallpaper:
                                 #     self.logger.warning('图片名-{} 已存在'.format(img_name))
                                 #     continue
                                 create_time = update_time = arrow.now().format('YYYY-MM-DD hh:mm:ss')
-                                insert_data = ['2', '极简壁纸', img_name, f"{list_item['w']}*{list_item['h']}", '', '', '', '',
+                                insert_data = ['2', '极简壁纸', img_name, f"{list_item['w']}*{list_item['h']}", '', '', '',
+                                               '',
                                                '', '', self.business_date, create_time, update_time]
                                 response = session.get(download_url.format(list_item['i'] + str(list_item['t']) + '9'),
                                                        headers=download_headers)
@@ -274,6 +288,223 @@ class JJWallpaper:
             # print(json.loads(response.text))
 
 
+class JJWallpaper(object):
+    """
+    该类用于完成两件事
+    1. 下载图片
+    2. 保存图片到数据库
+    """
+
+    def __init__(self, business_date=arrow.now().format('YYYY-MM-DD')):
+        self.img_url = 'https://api.zzzmh.cn/v2/bz/v3/getData'
+        self.download_url = 'https://api.zzzmh.cn/v2/bz/v3/getUrl/{}'
+        self.img_headers = {
+            "Referer": "https://bz.zzzmh.cn/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/117.0.0.0 Safari/537.36"
+        }
+        self.download_headers = {
+            "Referer": "https://bz.zzzmh.cn/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/117.0.0.0 Safari/537.36"
+        }
+        self.total_page = 0
+        self.total_count = 0
+        self.business_date = business_date
+
+        self.first_resp_queue = Queue()
+        self.img_url_queue = Queue()
+
+        self.db = MySqlSingleConnect()
+        # self.client = aiohttp.ClientSession()
+
+    def get_request_data(self):
+        """
+        请求页面数据
+        :return:
+        """
+        current = 1
+        curr_img = 0
+        data_json = {
+            "size": 96,  # 12 ~ 96
+            "current": 1,
+            "sort": 0,
+            "category": 0,
+            "resolution": 0,
+            "color": 0,
+            "categoryId": 0,
+            "ratio": 0
+        }
+        while True:
+            if current > 0:
+                response = requests.post(self.img_url, json=data_json, headers=self.img_headers)
+                if response.status_code == 200:
+                    resp_json = response.json()
+                    if resp_json['message'] == 'success':
+                        logger.info('获取第:' + str(current) + '页数据')
+                        data = resp_json['data']
+                        self.first_resp_queue.put(data)
+                        # if current < data['totalPage']:
+                        current = data['currPage']
+                        curr_img += len(data['list'])
+                        if current < 15:
+                            current += 1
+                            data_json['current'] = current
+                            time.sleep(random.randint(400, 800) / 1000)
+                        else:
+                            logger.info('共获取 {}页数据'.format(current))
+                            logger.info('获取图片数据总数: {}'.format(curr_img))
+                            self.total_page = data['totalPage']
+                            self.total_count = data['totalCount']
+                            self.first_resp_queue.put(None)
+                            current = -1
+            else:
+                break
+
+    def parse_first_resp(self):
+        while True:
+            data = self.first_resp_queue.get()
+            # 哨兵
+            if data is None:
+                self.img_url_queue.put(None)
+                break
+            logger.info('开始解析第:' + str(data['currPage']) + '页数据')
+            img_list = [item['i'] for item in data['list']]
+            existed_img_list = [item[0] for item in
+                                self.db.query("select name from hxf_spider.image where owner_id = {} and "
+                                              "`name` in ({})".format(2, "'" + "','".join(img_list) + "'"))]
+            for list_item in data['list']:
+                if existed_img_list:
+                    if list_item['i'] in existed_img_list:
+                        continue
+                img_url = self.download_url.format(list_item['i'] + str(list_item['t']) + '9')
+                self.img_url_queue.put({'img_url': img_url,
+                                        'name': list_item['i'],
+                                        'size': f"{list_item['w']}*{list_item['h']}"})
+            logger.info(
+                '成功解析第{}页共{}张图片，其中{}张图片已存在数据库'.format(data['currPage'], len(data['list']), len(existed_img_list)))
+
+    async def download_img(self, session, img_dict, directory_path):
+        """
+        下载图片，同时需要返回图片的相关信息
+        :param session:
+        :param img_dict:
+        :param directory_path:
+        :return:
+        """
+        try:
+            resp = await session.get(img_dict['img_url'], headers=self.download_headers)
+            if resp.status == 200:
+                if 'jpeg' in resp.headers.get('Content-Type'):
+                    img_dict['img_name'] = img_dict['name'] + '.jpg'
+                    img_dict['type'] = 'jpg'
+                else:
+                    img_dict['img_name'] = img_dict['name'] + '.png'
+                    img_dict['type'] = 'png'
+                content = await resp.read()
+                img_dict['hash'] = get_hash(BytesIO(content))
+                img_dict['img_path'] = directory_path + img_dict['img_name']
+                with open(img_dict['img_path'], 'wb') as f:
+                    f.write(content)
+                return resp.status, img_dict
+            return resp.status, img_dict
+
+        except Exception as e:
+            logger.error('下载图片 {} 报错 {}'.format(img_dict['img_url'], e))
+
+    def save_img_db(self, img_list):
+        create_time = update_time = arrow.now().format('YYYY-MM-DD hh:mm:ss')
+        hash_tuple = tuple([img_dict['hash'] for img_dict in img_list])
+        if len(hash_tuple) == 1:
+            repetitive_list = self.db.query(verify_sql % ('(\'' + hash_tuple[0] + '\')'))
+        else:
+            repetitive_list = self.db.query(verify_sql % str(hash_tuple))
+        for (_, name, hash_value, img_path) in repetitive_list:
+            for img_dict in img_list:
+                if img_dict['hash'] == hash_value:
+                    delete_file(img_dict['img_path'])
+                    img_list.remove(img_dict)
+                    logger.info('图片 {} 已存在数据库, 可自行检查图片'.format(img_path))
+
+        data_list = [
+            tuple(
+                [2, '极简壁纸', img_dict['name'], img_dict['size'], img_dict['type'], '', img_dict['img_path'], '',
+                 img_dict['hash'], '', self.business_date, create_time, update_time]) for img_dict in img_list]
+        self.db.insert_many(insert_sql, data_list)
+
+    def save_img(self):
+        """
+        请求图片下载为异步操作，准备图片url列表，使用异步获取图片，当列表所有的图片获取完毕完成一次循环
+        :return:
+        """
+
+        async def async_save_img(data_list):
+            task_list = []
+            img_list = []
+            logger.info('{}/{} 图片下载 开始'.format(len(img_list), len(data_list)))
+            # 创建异步任务下载图片
+            async with aiohttp.ClientSession() as session:
+                for img_data in data_list:
+                    resp = self.download_img(session, img_data, download_path)
+                    task_list.append(asyncio.create_task(resp))
+                logger.info('创建下载图片任务 {}个'.format(len(task_list)))
+                res_list, _ = await asyncio.wait(task_list)
+                for item in res_list:
+                    state, img_data = item.result()
+                    if state == 200:
+                        logger.info('执行下载图片任务 {} 成功'.format(img_data['img_url']))
+                        img_list.append(img_data)
+                    else:
+                        logger.warning('执行下载图片任务 {} 失败'.format(img_data['img_url']))
+            logger.info('{}/{} 图片下载 成功！'.format(len(img_list), len(img_data_list)))
+            await session.close()
+            if img_list:
+                self.save_img_db(img_list)
+
+        thread_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(thread_loop)
+
+        download_path = DOWNLOAD_PATH + 'jjwallpaper\\images\\'
+        exist_dir(download_path)
+        is_done = False
+        while not is_done:
+            queue_size = self.img_url_queue.qsize()
+            if queue_size == 0:
+                continue
+            img_count = queue_size if queue_size < 10 else 10
+            img_data_list = [self.img_url_queue.get() for _ in range(img_count)]
+            if img_data_list[-1] is None:
+                is_done = True
+                img_data_list = img_data_list[:-1]
+                if not img_data_list:
+                    return
+
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(async_save_img(img_data_list))
+            time.sleep(random.randint(400, 800) / 1000)
+        thread_loop.close()
+
+    def run(self):
+        thread_list = []
+        thread_1 = Thread(target=self.get_request_data)
+        thread_2 = Thread(target=self.parse_first_resp)
+        thread_3 = Thread(target=self.save_img)
+        thread_list.extend([thread_1, thread_2, thread_3])
+        # loop = asyncio.get_event_loop()
+        # loop.run_until_complete(self.save_img())
+
+        for thread in thread_list:
+            # 守护进程
+            thread.daemon = True
+            thread.start()
+
+        for thread in thread_list:
+            thread.join()
+
+        logger.info('极简壁纸取数完成！')
+
+
 if __name__ == '__main__':
     # JJWallpaper().operation()
+    # JJWallpaper().run()
     JJWallpaper().run()

@@ -2,7 +2,7 @@ import yaml
 
 
 def get_config():
-    path = r'D:\programme\python\HXF_Spider\setting.yml'
+    path = r'd:\programme\python\hxf_spider\setting.yml'
     with open(path, 'r', encoding='utf-8') as file_config:
         return [config for config in yaml.load_all(file_config, Loader=yaml.FullLoader)]
 
@@ -21,7 +21,7 @@ MYSQL_CONFIG = {
 
 PROCESS_COUNT = comm_config['PROCESS_COUNT']
 LOGGING_FILENAME = comm_config['LOGGING_FILENAME']
-DOMNLOAD_PATH = comm_config['DOMNLOAD_PATH']
+DOWNLOAD_PATH = comm_config['DOWNLOAD_PATH']
 
 if __name__ == '__main__':
     test_config, dev_config, master_config = get_config()
